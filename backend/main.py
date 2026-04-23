@@ -8,7 +8,7 @@ from nlp import parse_query, generate_insight
 app = FastAPI()
 
 # -------------------------------
-# CORS (Frontend connection)
+# CORS
 # -------------------------------
 app.add_middleware(
     CORSMiddleware,
@@ -19,7 +19,7 @@ app.add_middleware(
 )
 
 # -------------------------------
-# Sample dataset
+# DATASET
 # -------------------------------
 data = [
     {"name": "A", "grade": 10, "marks": 95},
@@ -31,15 +31,14 @@ data = [
 
 df = pd.DataFrame(data)
 
-# store last result for CSV download
 last_result = None
 
 
 # -------------------------------
-# Format response
+# FORMAT OUTPUT
 # -------------------------------
 def format_response(result_df):
-    if result_df is None or result_df.empty:
+    if result_df.empty:
         return "No data found."
 
     text = "📊 Results:\n\n"
@@ -49,7 +48,7 @@ def format_response(result_df):
 
 
 # -------------------------------
-# CHAT API
+# CHAT ENDPOINT
 # -------------------------------
 @app.post("/chat")
 def chat(request: dict):
@@ -57,58 +56,51 @@ def chat(request: dict):
 
     user_query = request.get("message", "")
 
-    # Step 1: LLM parsing
-    query_json = parse_query(user_query) or {}
+    query_json = parse_query(user_query)
+
+    print("DEBUG QUERY:", query_json)  # 🔥 IMPORTANT DEBUG
 
     result = df.copy()
 
-    # Step 2: Filters (safe handling)
-    filters = query_json.get("filters", {})
+    # -------------------------------
+    # FILTER (FIXED)
+    # -------------------------------
+    filters = query_json.get("filters") or {}
     grade = filters.get("grade")
 
     if grade is not None:
         result = result[result["grade"] == grade]
 
-    # Step 3: Aggregation logic
-    aggregation = query_json.get("aggregation")
+    # -------------------------------
+    # AGGREGATION
+    # -------------------------------
+    agg = query_json.get("aggregation")
 
-    if aggregation == "top":
+    if agg == "average":
+        avg = result["marks"].mean()
+
+        reply = f"📊 Average Marks: {round(avg, 2)}"
+        insight = generate_insight(reply)
+
+        return {
+            "reply": reply,
+            "insight": insight,
+            "download": "/download/csv"
+        }
+
+    if agg == "top":
         result = result.sort_values(by="marks", ascending=False)
 
-    elif aggregation == "average":
-        avg = float(result["marks"].mean()) if not result.empty else 0
-
-        last_result = result
-
-        return {
-            "reply": f"📊 Average Marks: {round(avg, 2)}",
-            "insight": "This shows overall class performance trend.",
-            "download": "/download/csv"
-        }
-
-    elif aggregation == "count":
-        count = len(result)
-
-        last_result = result
-
-        return {
-            "reply": f"📊 Total Students: {count}",
-            "insight": "This shows dataset size after filters.",
-            "download": "/download/csv"
-        }
-
-    # Step 4: Limit handling
+    # -------------------------------
+    # LIMIT
+    # -------------------------------
     limit = query_json.get("limit")
-
     if limit:
-        result = result.head(int(limit))
+        result = result.head(limit)
 
     last_result = result
 
-    # Step 5: Format output
     reply_text = format_response(result)
-
-    # Step 6: AI insight
     insight = generate_insight(reply_text)
 
     return {
@@ -119,13 +111,13 @@ def chat(request: dict):
 
 
 # -------------------------------
-# CSV DOWNLOAD
+# DOWNLOAD
 # -------------------------------
 @app.get("/download/csv")
 def download_csv():
     global last_result
 
-    if last_result is None or last_result.empty:
+    if last_result is None:
         return {"error": "No report generated yet"}
 
     file_path = "report.csv"

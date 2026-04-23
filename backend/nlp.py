@@ -1,125 +1,119 @@
 import os
 import json
+import re
 from dotenv import load_dotenv
 from google import genai
 
-# -------------------------------
-# Load environment variables
-# -------------------------------
 load_dotenv()
 
-API_KEY = os.getenv("GEMINI_API_KEY")
-
-if not API_KEY:
-    raise ValueError("GEMINI_API_KEY not found in .env file")
-
-# -------------------------------
-# Gemini client
-# -------------------------------
-client = genai.Client(api_key=API_KEY)
+client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 
 # -------------------------------
-# PARSE QUERY (NL → STRUCTURED JSON)
+# CLEAN TEXT FROM GEMINI
 # -------------------------------
-def parse_query(user_query):
+def clean_json(text: str):
+    text = re.sub(r"```json|```", "", text).strip()
+    return text
+
+
+# -------------------------------
+# FALLBACK REGEX PARSER (IMPORTANT)
+# -------------------------------
+def fallback_parse(user_query: str):
+    query = user_query.lower()
+
+    result = {
+        "data_type": "student_performance",
+        "filters": {"grade": None},
+        "aggregation": None,
+        "limit": None
+    }
+
+    # grade extraction
+    grade_match = re.search(r"grade\s*(\d+)", query)
+    if grade_match:
+        result["filters"]["grade"] = int(grade_match.group(1))
+
+    # limit extraction
+    limit_match = re.search(r"(top|show)\s*(\d+)", query)
+    if limit_match:
+        result["limit"] = int(limit_match.group(2))
+
+    # aggregation
+    if "average" in query or "mean" in query:
+        result["aggregation"] = "average"
+    elif "top" in query:
+        result["aggregation"] = "top"
+    elif "count" in query:
+        result["aggregation"] = "count"
+
+    return result
+
+
+# -------------------------------
+# MAIN PARSER (LLM + SAFE FALLBACK)
+# -------------------------------
+def parse_query(user_query: str):
 
     prompt = f"""
-You are an expert Data Analysis AI.
+You are a STRICT JSON extraction engine for student analytics.
 
-Convert the user query into STRICT JSON only.
+Return ONLY valid JSON.
 
----
+Dataset:
+name, grade, marks
 
-DATASET STRUCTURE:
-- name (string)
-- grade (integer)
-- marks (integer 0-100)
+Rules:
+- Extract grade if mentioned
+- Detect aggregation: top, average, count, null
+- Extract limit if mentioned
 
----
+Output format:
+{{
+  "data_type": "student_performance",
+  "filters": {{
+    "grade": null
+  }},
+  "aggregation": null,
+  "limit": null
+}}
 
-RULES:
-1. Output ONLY JSON.
-2. No explanation.
-3. No markdown.
-4. No extra text.
-
----
-
-FIELDS:
-- data_type: "student_performance"
-- filters: {{"grade": number or null}}
-- aggregation: "top" | "average" | "count" | null
-- limit: number or null
-
----
-
-LOGIC:
-- "top students" → aggregation = "top"
-- "average marks" → aggregation = "average"
-- "how many students" → aggregation = "count"
-- "top 5" → limit = 5
-
----
-
-USER QUERY:
+User query:
 {user_query}
 
-Return ONLY JSON:
+Return ONLY JSON.
 """
 
     try:
         response = client.models.generate_content(
-            model="gemini-1.5-flash-latest",
+            model="gemini-1.5-flash",
             contents=prompt
         )
 
-        text = response.text.strip()
+        text = clean_json(response.text)
+        parsed = json.loads(text)
 
-        # remove markdown if any
-        if text.startswith("```"):
-            text = text.replace("```json", "").replace("```", "").strip()
+        # 🔥 validation fix
+        if not isinstance(parsed, dict):
+            return fallback_parse(user_query)
 
-        return json.loads(text)
+        return parsed
 
     except Exception as e:
-        print("Parse error:", e)
-
-        return {
-            "data_type": "student_performance",
-            "filters": {},
-            "aggregation": None,
-            "limit": None
-        }
+        print("LLM failed → using fallback:", e)
+        return fallback_parse(user_query)
 
 
 # -------------------------------
-# GENERATE INSIGHTS
+# INSIGHT GENERATION
 # -------------------------------
-def generate_insight(data_text):
-
-    prompt = f"""
-You are a professional data analyst.
-
-Give 2–3 short insights based on the data below.
-
-RULES:
-- Bullet points only
-- No extra explanation
-- Simple English
-
-DATA:
-{data_text}
-"""
-
+def generate_insight(text: str):
     try:
         response = client.models.generate_content(
-            model="gemini-1.5-flash-latest",
-            contents=prompt
+            model="gemini-1.5-flash",
+            contents=f"Summarize this in 1-2 lines:\n{text}"
         )
-
         return response.text.strip()
-
-    except Exception as e:
-        print("Insight error:", e)
-        return "Insight generation failed."
+    except:
+        return "Insight not available."
